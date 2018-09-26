@@ -123,14 +123,15 @@ validity of those commands, so handle with care.
 
  #### Example
 
- Running against localhost 10,000 times, producing a PNG graph.
+ Running against bluecore-qa/dangertest 10,000 times, producing a PNG graph.
 
  ```bash
  ./gobigtableperf \
      --project bluecore-qa \
      --instance dangertest \
      scatter \
-     --cycles 1000 \
+     --cycles 10000 \
+     --concurrency 8 \
      --gnuplot | gnuplot > data.png
  ```
  ![example.png](example.png)
