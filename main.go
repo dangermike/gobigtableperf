@@ -7,7 +7,6 @@ import (
 	"os"
 	"sort"
 	"sync"
-	// "sync"
 	"time"
 
 	"cloud.google.com/go/bigtable"
@@ -454,19 +453,6 @@ func shuffleKeys(keys []string) {
 	rand.Shuffle(len(keys), func(i, j int) {
 		keys[i], keys[j] = keys[j], keys[i]
 	})
-}
-
-func clearTestKeys(ctx context.Context, project, instance, table string) error {
-	admin, err := bigtable.NewAdminClient(ctx, project, instance)
-	if err != nil {
-		return err
-	}
-
-	defer admin.Close()
-	if terr := admin.DeleteTable(ctx, table); terr == nil {
-		fmt.Println("Dropped old test table")
-	}
-	return nil
 }
 
 func sortInt64(arr []int64) {
