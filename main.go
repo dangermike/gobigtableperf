@@ -342,13 +342,6 @@ func scatterAction(ctx *cli.Context) error {
 		return err
 	}
 
-	client, err := bigtable.NewClient(con, ctx.GlobalString("project"), ctx.GlobalString("instance"))
-	if err != nil {
-		fmt.Println("Failed to connect")
-		return err
-	}
-	defer client.Close()
-
 	if ctx.Bool("gnuplot") {
 		fmt.Println("$DATABLOCK << EOD")
 	}
@@ -373,6 +366,12 @@ func scatterAction(ctx *cli.Context) error {
 		go func() {
 			defer wgWorkers.Done()
 			mykeys := keys[:] // copy for safety
+			client, err := bigtable.NewClient(con, ctx.GlobalString("project"), ctx.GlobalString("instance"))
+			if err != nil {
+				fmt.Println("Failed to connect")
+				panic(err)
+			}
+			defer client.Close()
 			table := client.Open(ctx.GlobalString("table"))
 			// warm up client
 			table.ReadRows(con, bigtable.RowList(mykeys[:10]), func(row bigtable.Row) bool {
