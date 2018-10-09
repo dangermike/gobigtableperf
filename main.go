@@ -274,7 +274,8 @@ func concurrencyAction(ctx *cli.Context) error {
 				go func() {
 					table := client.Open(ctx.GlobalString("table"))
 					defer wg.Done()
-					mykeys := keys[:]         // copy for safety
+					mykeys := make([]string, len(keys)) // copy for safety
+					copy(mykeys, keys)
 					for ix := range indices { // ix is the index where the duration will be written
 						shuffleKeys(mykeys)
 						actCnt := 0
@@ -365,7 +366,8 @@ func scatterAction(ctx *cli.Context) error {
 		wgWorkers.Add(1)
 		go func() {
 			defer wgWorkers.Done()
-			mykeys := keys[:] // copy for safety
+			mykeys := make([]string, len(keys)) // copy for safety
+			copy(mykeys, keys)
 			client, err := bigtable.NewClient(con, ctx.GlobalString("project"), ctx.GlobalString("instance"))
 			if err != nil {
 				fmt.Println("Failed to connect")
