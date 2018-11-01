@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"sort"
@@ -10,9 +12,17 @@ import (
 	"time"
 
 	"cloud.google.com/go/bigtable"
+	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 	"golang.org/x/net/context"
+	"gonum.org/v1/gonum/stat"
 )
+
+type scatterItem struct {
+	keys      int
+	timestamp time.Time
+	duration  time.Duration
+}
 
 func main() {
 	app := cli.NewApp()
@@ -113,6 +123,10 @@ func main() {
 				cli.BoolFlag{
 					Name:  "gnuplot",
 					Usage: "Output GnuPlot script for scatter",
+				},
+				cli.BoolFlag{
+					Name:  "summarize",
+					Usage: "Output summary statistics for scatter",
 				},
 				cli.StringSliceFlag{
 					Name:  "gnuplot-extra",
@@ -312,11 +326,6 @@ func concurrencyAction(ctx *cli.Context) error {
 	return err
 }
 
-type scatterItem struct {
-	keys     int
-	duration time.Duration
-}
-
 func scatterAction(ctx *cli.Context) error {
 	if ctx.Int("min-keys") < 1 {
 		return errors.New("min-keys must be greater than zero")
@@ -343,14 +352,10 @@ func scatterAction(ctx *cli.Context) error {
 		return err
 	}
 
-	if ctx.Bool("gnuplot") {
-		fmt.Println("$DATABLOCK << EOD")
-	}
-
 	var wgWorkers sync.WaitGroup
 	var wgWriter sync.WaitGroup
-	indices := make(chan int) // indices into the result slice
-	outchan := make(chan scatterItem)
+	indices := make(chan int)               // indices into the result slice
+	outchan := make(chan scatterItem, 1000) // buffered so output doesn't influence workers
 	minKeys := ctx.Int("min-keys")
 	maxKeys := ctx.Int("max-keys")
 	keyRange := maxKeys - minKeys
@@ -358,8 +363,26 @@ func scatterAction(ctx *cli.Context) error {
 	wgWriter.Add(1)
 	go func() {
 		defer wgWriter.Done()
-		for si := range outchan {
-			fmt.Printf("%d\t%0.3f\n", si.keys, float64(si.duration.Nanoseconds())/1000000.0)
+		if ctx.Bool("gnuplot") {
+			start := time.Now()
+			var xSelector func(dp scatterItem) float64
+			var xLabel string
+			if keyRange == 0 {
+				xSelector = func(dp scatterItem) float64 {
+					return dp.timestamp.Sub(start).Seconds()
+				}
+				xLabel = "time since test start"
+			} else {
+				xSelector = func(dp scatterItem) float64 {
+					return float64(dp.keys)
+				}
+				xLabel = "number of keys"
+			}
+			plotPoints(ctx.StringSlice("gnuplot-extras"), xLabel, xSelector, outchan)
+		} else if ctx.Bool("summarize") {
+			summarizePoints(ctx.Int("cycles"), outchan)
+		} else {
+			writePoints(outchan)
 		}
 	}()
 	for t := 0; t < ctx.Int("concurrency"); t++ {
@@ -399,7 +422,7 @@ func scatterAction(ctx *cli.Context) error {
 				if rerr != nil {
 					panic(rerr)
 				}
-				outchan <- scatterItem{keyCnt, dur}
+				outchan <- scatterItem{keyCnt, start, dur}
 			}
 		}()
 	}
@@ -410,21 +433,6 @@ func scatterAction(ctx *cli.Context) error {
 	wgWorkers.Wait()
 	close(outchan)
 	wgWriter.Wait()
-
-	if ctx.Bool("gnuplot") {
-		fmt.Println("EOD")
-		fmt.Println(`set fit nolog`)
-		fmt.Println(`set fit quiet`)
-		fmt.Println(`set term pngcairo size 1280, 1024 font "sans,16"`)
-		fmt.Println(`set xlabel "key count"`)
-		fmt.Println(`set ylabel "time (ms)"`)
-		for _, line := range ctx.StringSlice("gnuplot-extra") {
-			fmt.Println(line)
-		}
-		fmt.Println(`f(x) = a*x+b`)
-		fmt.Println(`fit f(x) $DATABLOCK via a,b`)
-		fmt.Printf("plot $DATABLOCK title \"mget (c=%d)\", f(x) with lines lw 3 title sprintf(\"y = %%0.6fx + %%0.6f\", a, b)\n", ctx.Int("concurrency"))
-	}
 	return nil
 }
 
@@ -468,4 +476,111 @@ func medianInt64(data []int64) float64 {
 		return float64(data[l/2-1]+data[l/2+1]) / 2.0
 	}
 	return float64(data[l/2])
+}
+
+func writePoints(plotchan <-chan scatterItem) {
+	for dp := range plotchan {
+		fmt.Printf("%d\t%0.3f\n", dp.keys, float64(dp.duration.Nanoseconds())/1000000.0)
+	}
+}
+
+func plotPoints(gnuplotExtra []string, xLabel string, xSelector func(scatterItem) float64, plotchan <-chan scatterItem) {
+	w := bufio.NewWriter(os.Stdout)
+	w.WriteString("$DATABLOCK << EOD\n")
+	start := time.Now()
+	cnt := 0
+	for dp := range plotchan {
+		w.WriteString(fmt.Sprintf(
+			"%0.03f\t%0.3f\n",
+			xSelector(dp),
+			float64(dp.duration.Nanoseconds())/1000000.0,
+		))
+		cnt++
+	}
+	dur := time.Now().Sub(start)
+	w.Flush()
+	// these are all after the data collection is complete, so we don't have to buffer
+	fmt.Println("EOD")
+	fmt.Println(`set term pngcairo size 1920, 1080 font "sans,16"`)
+	fmt.Println(`set fit nolog`)
+	fmt.Println(`set fit quiet`)
+	fmt.Println(`set term pngcairo size 1280, 1024 font "sans,16"`)
+	fmt.Printf("set xlabel \"%s\"\n", xLabel)
+	fmt.Println(`set ylabel "latency (ms)"`)
+	fmt.Println(`f(x) = a*x+b`)
+	fmt.Println(`fit f(x) $DATABLOCK via a,b`)
+	for _, line := range gnuplotExtra {
+		fmt.Println(line)
+	}
+	fmt.Printf(
+		"plot $DATABLOCK title \"service latency/bandwidth; %0.3fHz\"\n",
+		math.Round(float64(cnt)*100/dur.Seconds())/100.0,
+	)
+}
+
+func summarizePoints(expectedCycles int, plotchan <-chan scatterItem) {
+	// using a compact representation: array where each cell represents a
+	// millisecond. Values come in and are quantized into the array. Allows
+	// for a nearly infinite number of points to be read in a fixed amount
+	// of memory.
+	buckets := make([]int, 5000, 5000)
+	max := int64(0)
+	min := int64(1 << 30)
+	cnt := 0
+	totalNs := int64(0)
+	lastEmit := time.Now()
+	for dp := range plotchan {
+		totalNs += dp.duration.Nanoseconds()
+		ms := dp.duration.Nanoseconds() / 1000000
+		if ms < int64(len(buckets)) {
+			buckets[ms]++
+		} else {
+			buckets[len(buckets)-1]++
+		}
+		cnt++
+		if ms > max {
+			max = ms
+		}
+		if ms < min {
+			min = ms
+		}
+		if time.Now().Sub(lastEmit) > (time.Second * 5) {
+			log.WithFields(log.Fields{
+				"count":  cnt,
+				"cycles": expectedCycles,
+				// "done":   math.Round(10000.0*float64(cnt)/float64(expectedCycles)) / 10000.0,
+			}).Info("working")
+			lastEmit = time.Now()
+		}
+	}
+
+	// what we collected in `buckets` are really weights.
+	// These fakes are the values
+	// while we're here, we'll also normalize the weights for... reasons
+	vals := make([]float64, len(buckets), len(buckets))
+	weights := make([]float64, len(buckets), len(buckets))
+	for i := 0; i < len(vals); i++ {
+		vals[i] = float64(i)
+		weights[i] = float64(buckets[i]) / float64(cnt)
+	}
+
+	mode := 0
+	for i := 0; i < len(buckets); i++ {
+		if buckets[i] > buckets[mode] {
+			mode = i
+		}
+	}
+	log.WithFields(log.Fields{
+		"count":   cnt,
+		"max_ms":  max,
+		"min_ms":  min,
+		"mean_ms": float64(totalNs) / (float64(cnt) * float64(1000000)),
+		"mode_ms": mode,
+		"q25_ms":  stat.Quantile(0.25, stat.Empirical, vals, weights),
+		"q50_ms":  stat.Quantile(0.50, stat.Empirical, vals, weights),
+		"q75_ms":  stat.Quantile(0.75, stat.Empirical, vals, weights),
+		"q90_ms":  stat.Quantile(0.90, stat.Empirical, vals, weights),
+		"q95_ms":  stat.Quantile(0.95, stat.Empirical, vals, weights),
+		"q99_ms":  stat.Quantile(0.99, stat.Empirical, vals, weights),
+	}).Info("Done")
 }

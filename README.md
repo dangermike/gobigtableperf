@@ -106,11 +106,15 @@ Output key-count vs. time points, optionally plotting. The goal of this test is
 to show the performance of the system under the load of a particular level of
 concurrency.
 
-Using the `--gnuplot` option will produce a script to generate a
-PNG with linear trendline. Note that the `--gnuplot-extra` parameter will put
-any custom GnuPlot commands into the output. This can be used to create custom
-axis labels, titles, output formats, etc. This application does not check the
-validity of those commands, so handle with care.
+Using the `--gnuplot` option will produce a [gnuplot](http://www.gnuplot.info/)
+script to generate a PNG with linear trendline. If the number of keys is
+constant (min-keys equals max-keys), the x-axis of the plot will be time since
+the start of the test. Otherwise, the x-axis will be the number of keys in each
+request. Note that the `--gnuplot-extra` parameter will put any custom GnuPlot commands into the output. This can be used to create custom axis labels, titles, output formats, etc. This application does not check the validity of
+those commands, so handle with care.
+
+`--summarize` emits summary statistics at the end of the run. This is exclusive
+of other outputs, so it cannot be combined with `--gnuplot`.
 
 | Parameters                                                                        ||
 | ---------------------- | --------------------------------------------------------- |
@@ -118,6 +122,7 @@ validity of those commands, so handle with care.
 |`--cycles value`        | Number of attempts for each key count (default: 100)      |
 |`--min-keys value`      | Minimum number of keys to fetch in a cycle (default: 1)   |
 |`--max-keys value`      | Maximum number of keys to fetch in a cycle (default: 100) |
+|`--summarize`           | Output summary statistics                                 |
 |`--gnuplot`             | Output GnuPlot script for scatter                         |
 |`--gnuplot-extra value` | Inject additional commands into the gnuplot render        |
 
